@@ -1,0 +1,21 @@
+.agents/skills/
+
+# Python environments and generated caches
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Local configuration and secrets
+.env
+.env.*
+!.env.example
+.streamlit/secrets.toml
+
+# Personal and generated PDF files
+*.pdf
+
+# Operating-system files
+.DS_Store

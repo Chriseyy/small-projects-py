@@ -1,171 +1,174 @@
-import os
+from __future__ import annotations
+
+import argparse
+from pathlib import Path
+from typing import Iterable
+
 from pypdf import PdfReader, PdfWriter
 
-# ==========================================
-# 1. SPLIT
-# ==========================================
-def split_pdf(input_path, split_points):
-    """
-    Splits a PDF at multiple points.
-    split_points: List of page numbers AFTER which to split.
-    """
-    reader = PdfReader(input_path)
-    total_pages = len(reader.pages)
-    
-    split_points = sorted(list(set(split_points)))
-    
-    start = 0
-    base_name = os.path.splitext(input_path)[0]
-    all_limits = split_points + [total_pages]
 
-    for i, end in enumerate(all_limits):
-        if start >= total_pages:
-            break
-            
-        writer = PdfWriter()
-        # Add pages from start to end
-        for page_idx in range(start, end):
-            if page_idx < total_pages:
-                writer.add_page(reader.pages[page_idx])
-        
-        output_filename = f"{base_name}_split_{start+1}-{end}.pdf"
-        
-        with open(output_filename, "wb") as f:
-            writer.write(f)
-        
-        print(f"Created: {output_filename}")
-        start = end 
+def parse_page_selection(selection: str, page_count: int) -> list[int]:
+    """Parse a 1-based selection such as ``1,3-5,8``."""
+    if page_count < 1:
+        raise ValueError("The PDF must contain at least one page.")
 
-
-# ==========================================
-# 2. EXTRACT
-# ==========================================
-def extract_pages(input_path, pages_to_extract, mode="single"):
-    """
-    Extracts pages.
-    mode="single": All pages in one PDF.
-    mode="separate": Each page in a separate PDF.
-    """
-    reader = PdfReader(input_path)
-    base_name = os.path.splitext(input_path)[0]
-
-    if mode == "single":
-        writer = PdfWriter()
-        real_pages = []
-        for p in pages_to_extract:
-            idx = p - 1
-            if 0 <= idx < len(reader.pages):
-                writer.add_page(reader.pages[idx])
-                real_pages.append(p)
-        
-        if real_pages:
-            output_filename = f"{base_name}_extract_combined.pdf"
-            with open(output_filename, "wb") as f:
-                writer.write(f)
-            print(f"Extracted pages {real_pages} to: {output_filename}")
-
-    elif mode == "separate":
-        for p in pages_to_extract:
-            idx = p - 1
-            if 0 <= idx < len(reader.pages):
-                writer = PdfWriter()
-                writer.add_page(reader.pages[idx])
-                
-                output_filename = f"{base_name}_page_{p}.pdf"
-                with open(output_filename, "wb") as f:
-                    writer.write(f)
-                print(f"Extracted single page: {output_filename}")
-
-
-# ==========================================
-# 3. MERGE (UPDATED - NO PdfMerger)
-# ==========================================
-def merge_pdfs(pdf_list, output_filename="merged_result.pdf"):
-    """
-    Merges PDFs using PdfWriter (fixes ImportError).
-    """
-    writer = PdfWriter()
-
-    for pdf in pdf_list:
-        if os.path.exists(pdf):
-            writer.append(pdf)
+    pages: list[int] = []
+    for part in selection.replace(" ", "").split(","):
+        if not part:
+            raise ValueError("Page selections cannot contain empty items.")
+        if "-" in part:
+            bounds = part.split("-")
+            if len(bounds) != 2 or not all(bound.isdigit() for bound in bounds):
+                raise ValueError(f"Invalid page range: {part}")
+            start, end = (int(bound) for bound in bounds)
+            if start > end:
+                raise ValueError(f"Page range must be ascending: {part}")
+            pages.extend(range(start, end + 1))
+        elif part.isdigit():
+            pages.append(int(part))
         else:
-            print(f"File missing: {pdf}")
+            raise ValueError(f"Invalid page selection: {part}")
 
-    with open(output_filename, "wb") as f:
-        writer.write(f)
-    
-    print(f"Merged into: {output_filename}")
+    if any(page < 1 or page > page_count for page in pages):
+        raise ValueError(f"Pages must be between 1 and {page_count}.")
+    if len(set(pages)) != len(pages):
+        raise ValueError("A page may only appear once in a selection.")
+    return pages
 
 
-# ==========================================
-# 4. ROTATE
-# ==========================================
-def rotate_pages(input_path, rotation_config):
-    """
-    Rotates pages.
-    rotation_config:
-      - int (90): Rotate all
-      - tuple ([1,3], 90): Rotate specific pages
-      - dict {1:90, 2:180}: Mixed rotation
-    """
-    reader = PdfReader(input_path)
+def _reader(input_path: str | Path) -> PdfReader:
+    path = Path(input_path)
+    if not path.is_file():
+        raise FileNotFoundError(f"PDF not found: {path}")
+    return PdfReader(path)
+
+
+def _write(writer: PdfWriter, output_path: str | Path) -> Path:
+    path = Path(output_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("wb") as output_file:
+        writer.write(output_file)
+    return path
+
+
+def _add_pages(writer: PdfWriter, reader: PdfReader, page_numbers: Iterable[int]) -> None:
+    for page_number in page_numbers:
+        writer.add_page(reader.pages[page_number - 1])
+
+
+def merge_pdfs(input_paths: Iterable[str | Path], output_path: str | Path) -> Path:
+    paths = [Path(path) for path in input_paths]
+    if not paths:
+        raise ValueError("At least one input PDF is required.")
     writer = PdfWriter()
-
-    # Case 1: Rotate ALL (Input is just a number)
-    if isinstance(rotation_config, int):
-        global_angle = rotation_config
+    for path in paths:
+        reader = _reader(path)
         for page in reader.pages:
-            page.rotate(global_angle)
             writer.add_page(page)
-        suffix = f"all_{global_angle}"
+    return _write(writer, output_path)
 
-    # Case 2: List + Angle (Input: ([1,3], 90))
-    elif isinstance(rotation_config, tuple):
-        target_pages = [p - 1 for p in rotation_config[0]] 
-        angle = rotation_config[1]
-        
-        for i, page in enumerate(reader.pages):
-            if i in target_pages:
-                page.rotate(angle)
-            writer.add_page(page)
-        suffix = "selected_rotated"
 
-    # Case 3: Dictionary (Input: {1:90, 2:180})
-    elif isinstance(rotation_config, dict):
-        rotation_map = {k - 1: v for k, v in rotation_config.items()}
-        
-        for i, page in enumerate(reader.pages):
-            if i in rotation_map:
-                angle = rotation_map[i]
-                page.rotate(angle)
-            writer.add_page(page)
-        suffix = "mixed_rotation"
+def extract_pages(
+    input_path: str | Path, pages: Iterable[int], output_path: str | Path
+) -> Path:
+    reader = _reader(input_path)
+    page_numbers = list(pages)
+    _validate_pages(page_numbers, len(reader.pages))
+    writer = PdfWriter()
+    _add_pages(writer, reader, page_numbers)
+    return _write(writer, output_path)
 
+
+def split_pdf(
+    input_path: str | Path,
+    split_points: Iterable[int],
+    output_dir: str | Path,
+) -> list[Path]:
+    reader = _reader(input_path)
+    total_pages = len(reader.pages)
+    points = sorted(set(split_points))
+    if any(point < 1 or point >= total_pages for point in points):
+        raise ValueError(f"Split points must be between 1 and {total_pages - 1}.")
+
+    boundaries = [0, *points, total_pages]
+    source_stem = Path(input_path).stem
+    outputs: list[Path] = []
+    for start, end in zip(boundaries, boundaries[1:]):
+        writer = PdfWriter()
+        for page_index in range(start, end):
+            writer.add_page(reader.pages[page_index])
+        output_path = Path(output_dir) / f"{source_stem}_split_{start + 1}-{end}.pdf"
+        outputs.append(_write(writer, output_path))
+    return outputs
+
+
+def rotate_pages(
+    input_path: str | Path,
+    pages: Iterable[int] | None,
+    angle: int,
+    output_path: str | Path,
+) -> Path:
+    if angle not in {90, 180, 270}:
+        raise ValueError("Rotation angle must be 90, 180, or 270 degrees.")
+    reader = _reader(input_path)
+    page_numbers = set(range(1, len(reader.pages) + 1)) if pages is None else set(pages)
+    _validate_pages(page_numbers, len(reader.pages))
+    writer = PdfWriter()
+    for page_number, page in enumerate(reader.pages, start=1):
+        if page_number in page_numbers:
+            page.rotate(angle)
+        writer.add_page(page)
+    return _write(writer, output_path)
+
+
+def reorder_pages(
+    input_path: str | Path, page_order: Iterable[int], output_path: str | Path
+) -> Path:
+    reader = _reader(input_path)
+    order = list(page_order)
+    if sorted(order) != list(range(1, len(reader.pages) + 1)):
+        raise ValueError("Page order must contain every page exactly once.")
+    writer = PdfWriter()
+    _add_pages(writer, reader, order)
+    return _write(writer, output_path)
+
+
+def delete_pages(
+    input_path: str | Path, pages: Iterable[int], output_path: str | Path
+) -> Path:
+    reader = _reader(input_path)
+    pages_to_delete = set(pages)
+    _validate_pages(pages_to_delete, len(reader.pages))
+    remaining = [page for page in range(1, len(reader.pages) + 1) if page not in pages_to_delete]
+    if not remaining:
+        raise ValueError("At least one page must remain.")
+    writer = PdfWriter()
+    _add_pages(writer, reader, remaining)
+    return _write(writer, output_path)
+
+
+def _validate_pages(pages: Iterable[int], page_count: int) -> None:
+    page_numbers = list(pages)
+    if not page_numbers or any(page < 1 or page > page_count for page in page_numbers):
+        raise ValueError(f"Pages must be between 1 and {page_count}.")
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description="Perform common PDF operations.")
+    parser.add_argument("input", type=Path)
+    parser.add_argument("output", type=Path)
+    parser.add_argument("--extract", metavar="PAGES", help="Extract pages, e.g. 1,3-5")
+    parser.add_argument("--rotate", type=int, metavar="DEGREES")
+    args = parser.parse_args()
+
+    if args.extract:
+        reader = _reader(args.input)
+        extract_pages(args.input, parse_page_selection(args.extract, len(reader.pages)), args.output)
+    elif args.rotate:
+        rotate_pages(args.input, None, args.rotate, args.output)
     else:
-        print("Invalid input for rotation.")
-        return
-
-    output_filename = f"{os.path.splitext(input_path)[0]}_{suffix}.pdf"
-    with open(output_filename, "wb") as f:
-        writer.write(f)
-    print(f"Rotated PDF saved: {output_filename}")
+        parser.error("Choose an operation, such as --extract or --rotate.")
 
 
-# ==========================================
-# CONTROL
-# ==========================================
 if __name__ == "__main__":
-    
-    my_pdf = "irgendwass.pdf"
-    # split_pdf(my_pdf, [50])
-    
-    # extract_pages(my_pdf, [1, 2, 3], mode="single")
-
-    # rotate_pages(my_pdf, 90)
-    rotate_pages(my_pdf, ([1], 180))
-
-
-    # merge_pdfs(["teil1.pdf", "teil2.pdf"], "fertig.pdf")
-    
-    print("Skript fertig geladen. Bitte einkommentieren, was du tun willst.")
+    main()
